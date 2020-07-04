@@ -20,7 +20,8 @@ const char zeroV = 2;
 // Pins to be used
 const int ledPin = 13;
 const int v12Pin = 23;
-const int v0Pin = 22;
+const int v5Pin = 22;
+const int v0Pin = 21;
 const int relay1 = 16;
 const int relay2 = 17;
 
@@ -36,9 +37,8 @@ void setup() {
 
   // Set the override pin modes
   pinMode(v12Pin, INPUT_PULLUP);
+  pinMode(v5Pin, INPUT_PULLUP);
   pinMode(v0Pin, INPUT_PULLUP);
-  //digitalWrite(v12Pin, LOW);
-  //digitalWrite(v0Pin, LOW);
 
   // Pin 13 is the onboard LED just to signal power on
   pinMode(ledPin, OUTPUT);
@@ -68,6 +68,11 @@ void loop() {
     digitalWrite(relay1, LOW);
     digitalWrite(relay2, HIGH);
     state = zeroV;
+  } else if (!digitalRead(v5Pin) && (state != fiveV)) {
+    Serial.println("Doing 5V");
+    digitalWrite(relay1, LOW);
+    digitalWrite(relay2, LOW);
+    state = fiveV;
   } else {
     // Timeout in millis: hardware/teensy/avr/cores/teensy3/usb_rawhid.c
     n = RawHID.recv(buffer, 0); // 0 timeout = do not wait
