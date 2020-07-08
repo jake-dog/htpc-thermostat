@@ -1,30 +1,33 @@
 #!/usr/bin/env python3
 
-# https://stackoverflow.com/a/49909330
-
-# Must be run as administrator!
-
-#import os (set current directory for hidapi.dll)
-#import sys (set system.path for clr.AddReference)
-
+# Base modules needed by thermostat
 import configparser
 import sys
 import time
-import ctypes
 
+# OpenHardwareMonitorLib.dll is only 32-bit, so application must be 32-bit!
 if sys.maxsize > 2**32:
     raise Exception("OpenHardwareMonitorLib is only 32-bit")
 
-# Needs 32-bit OpenHardwareMonitorLib.dll; must run as administrator!
-import clr
+# pywin32 is used to create a message-only window to receive USB device changes
+# https://github.com/mhammond/pywin32/blob/master/win32/Demos/win32gui_devicenotify.py
+# https://docs.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
+import win32gui
+import win32con
+import win32file
+import win32api
+import win32gui_struct
 
 # Needs 32-bit hidapi.dll and lib in same directory as binary, or os.getcwd()
 # https://docs.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order#standard-search-order-for-desktop-applications
 import hid
+import ctypes
 
-# Open up the OpenHardwareMonitor library with CLR
+# Meeds 32-bit OpenHardwareMonitorLib.dll in same directory as binary or sys.path
+# **Must run as administrator!**
+# https://stackoverflow.com/a/49909330
+import clr
 clr.AddReference('OpenHardwareMonitorLib')
-
 from OpenHardwareMonitor import Hardware
 
 class Thermostat():
@@ -115,6 +118,98 @@ class TemperatureSensor():
         self.__hardware.Update()
         self.value = self.__sensor.Value
         return self.value
+
+
+class Win32HID():
+    # **Everything is added to self to keep python from doing GC!!**
+
+    # USB Device works, but HID device is more specific. Both listed anyway
+    GUID_DEVINTERFACE_USB_DEVICE = "{A5DCBF10-6530-11D2-901F-00C04FB951ED}"
+    GUID_DEVINTERFACE_HID = "{4D1E55B2-F16F-11CF-88CB-001111000030}"
+    
+    # HID Device type string
+    HID_DEVICE_CLASS = '\\\\?\\HID'
+    
+    # Teensy multiple-interface ID (00 for HID, and 01 for serial emulation)
+    # https://docs.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers#multiple-interface-usb-devices
+    INTERFACE = 'MI_00'
+
+    def __init__(self, vid=0x16C0, pid=0x0486):
+        # First convert IDs into a format we can detect in device name
+        try:
+            self.ids = [
+                f"VID_{hex(int(vid))[2:].upper()}",
+                f"PID_{hex(int(pid))[2:].upper()}",
+                Win32HID.INTERFACE
+            ]
+        except:
+            self.ids = [
+                f"VID_{hex(int(vid, 0))[2:].upper()}",
+                f"PID_{hex(int(pid, 0))[2:].upper()}",
+                Win32HID.INTERFACE
+            ]
+    
+        # Create a window class for receiving messages
+        self.wc = win32gui.WNDCLASS()
+        self.wc.hInstance = win32api.GetModuleHandle(None)
+        self.wc.lpszClassName = "usbnotifier"
+        self.wc.lpfnWndProc = {win32con.WM_DEVICECHANGE:self.__devicechange}
+        
+        # Register the window class
+        winClass = win32gui.RegisterClass(self.wc)
+        
+        # Create a Message-Only window
+        self.hwnd = win32gui.CreateWindowEx(
+            0,                      #dwExStyle
+			self.wc.lpszClassName,  #lpClassName
+			self.wc.lpszClassName,  #lpWindowName
+			0, 0, 0, 0, 0,
+			win32con.HWND_MESSAGE,  #hWndParent
+			0, 0, None)
+        
+        # Watch for all USB device notifications
+        self.filter = win32gui_struct.PackDEV_BROADCAST_DEVICEINTERFACE(Win32HID.GUID_DEVINTERFACE_HID)
+        self.hdev = win32gui.RegisterDeviceNotification(self.hwnd, self.filter,
+                                                        win32con.DEVICE_NOTIFY_WINDOW_HANDLE)
+        
+        # Run the message loop
+        #while True:
+        #    try:
+        #        win32gui.PumpWaitingMessages()
+                # TODO should use win32event.MsgWaitForMultipleObjects
+        #        time.sleep(0.25)
+        #    except:
+        #        win32gui.DestroyWindow(self.hwnd)
+        #        win32gui.UnregisterClass(self.wc.lpszClassName, None)
+
+                
+    def messageloop(self):
+        #https://stackoverflow.com/questions/51535713/pumpmessages-in-new-thread
+        # PumpMessages runs until PostQuitMessage() is called by someone.
+        win32gui.PumpMessages()   
+                
+
+    def __matchingdevice(self, name):
+        # Name looks like:
+        # '\\\\?\\HID#VID_16C0&PID_0486&MI_01#7&2d928156&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+        chunks = name.split("#")
+        if len(chunks) > 2 and chunk[0] == Win32HID.HID_DEVICE_CLASS:
+            ids = chunks[1].split("&")
+            if all(id in ids for id in self.ids):
+                return True
+        return False
+
+    # WM_DEVICECHANGE message handler.
+    def __devicechange(self, hWnd, msg, wParam, lParam):
+        info = win32gui_struct.UnpackDEV_BROADCAST(lParam)
+        print("Device change notification:", wParam, str(info))
+        
+        if info.devicetype == win32con.DBT_DEVTYP_DEVICEINTERFACE:
+            if wParam == win32con.DBT_DEVICEREMOVECOMPLETE:
+                print("Device is being removed")
+            elif wParam == win32con.DBT_DEVICEARRIVAL:
+                print("Device is being added")
+        return True
         
 
 def unknown_switch(*args, **kwargs):
