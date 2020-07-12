@@ -72,14 +72,19 @@ class Thermostat():
         for i in range(1, len(keys)-1):
             middle_range(keys[i], keys[i+1], self.__ranges)
         
-        # Set the mode to a function which always returns False for int
+        # Set the mode to a function which always returns False
         self.__hrange = lambda t: (None, False)
         
-    def mode(self, temperature):
-        mode, hasmode = self.__hrange(temperature)
+    def mode(self, temperature, changes=True, unchanged=None):
+        newmode, hasmode = self.__hrange(temperature)
         if not hasmode:
             self.__hrange = next(self.__ranges[f] for f in self.__ranges.keys() if f(temperature))
-            return self.__hrange(temperature)[0]
+            newmode = self.__hrange(temperature)[0]
+        try:
+            mode = unchanged if self.__last == newmode and changes else newmode
+        except AttributeError:
+            mode = newmode
+        self.__last = newmode
         return mode
 
 
