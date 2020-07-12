@@ -59,27 +59,27 @@ class Thermostat():
         # The below min, and above max ranges are special
         self.__ranges = {
             lambda t: t < t1 + fhyst:
-                lambda t: self.__temp_map[tmin] if t < (t1 + fhyst) else False,
+                lambda t: (self.__temp_map[tmin], True) if t < (t1 + fhyst) else (None, False),
             lambda t: t >= tmax + fhyst:
-                lambda t: self.__temp_map[tmax] if t > (tmax - rhyst) else False,
+                lambda t: (self.__temp_map[tmax], True) if t > (tmax - rhyst) else (None, False),
         }
         
         # Remaining hysteresis ranges filled in dynamically
         def middle_range(low, hi, target):
             forward = lambda t: t >= (low + fhyst) and t < (hi + fhyst)
-            reverse = lambda t: self.__temp_map[low] if t > (low - rhyst) and t < (hi + fhyst) else False
+            reverse = lambda t: (self.__temp_map[low], True) if t > (low - rhyst) and t < (hi + fhyst) else (None, False)
             target[forward] = reverse
         for i in range(1, len(keys)-1):
             middle_range(keys[i], keys[i+1], self.__ranges)
         
         # Set the mode to a function which always returns False for int
-        self.__hrange = callable
+        self.__hrange = lambda t: (None, False)
         
     def mode(self, temperature):
-        mode = self.__hrange(temperature)
-        if not mode:
+        mode, hasmode = self.__hrange(temperature)
+        if not hasmode:
             self.__hrange = next(self.__ranges[f] for f in self.__ranges.keys() if f(temperature))
-            return self.__hrange(temperature)
+            return self.__hrange(temperature)[0]
         return mode
 
 
