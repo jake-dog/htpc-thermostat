@@ -65,10 +65,12 @@ class Thermostat():
         }
         
         # Remaining hysteresis ranges filled in dynamically
-        for i in range(1, len(keys)-1, 2):
-            forward = lambda t: t >= (keys[i] + fhyst) and t < (keys[i+1] + fhyst)
-            reverse = lambda t: self.__temp_map[keys[i]] if t > (keys[i] - rhyst) and t < (keys[i+1] + fhyst) else False
-            self.__ranges[forward] = reverse
+        def middle_range(low, hi, target):
+            forward = lambda t: t >= (low + fhyst) and t < (hi + fhyst)
+            reverse = lambda t: self.__temp_map[low] if t > (low - rhyst) and t < (hi + fhyst) else False
+            target[forward] = reverse
+        for i in range(1, len(keys)-1):
+            middle_range(keys[i], keys[i+1], self.__ranges)
         
         # Set the mode to a function which always returns False for int
         self.__hrange = callable
