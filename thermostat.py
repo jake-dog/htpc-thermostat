@@ -35,31 +35,50 @@ class Thermostat():
         if len(args) % 2:
             raise Exception("Arugments must be in pairs")
         
-        self.__temperature_map = {}
+        # Allow forward and reverse hysteresis
+        fhyst = int(kwargs.pop("forward_hysteresis", 0))
+        rhyst = int(kwargs.pop("reverse_hysteresis", 0))
+        
+        self.__temp_map = {}
         
         for i in range(0, len(args), 2):
-            self.__temperature_map[int(args[i+1])] = args[i]
+            self.__temp_map[int(args[i+1])] = args[i]
             
         for k, v in kwargs.items():
-            self.__temperature_map[int(v)] = k
+            self.__temp_map[int(v)] = k
         
-        self.__min = min(self.__temperature_map.keys())
-        self.__max = max(self.__temperature_map.keys())
+        if len(self.__temp_map.keys()) < 2:
+            raise Exception("Thermostat requires at least 2 settings (hi/lo)")
         
-        # To make temperature lookups O(c) create a mode map for all
-        # temperatures between min and max
-        for temp in range(self.__min, self.__max+1):
-            if temp in self.__temperature_map.keys():
-                mode = self.__temperature_map[temp]
-                continue
-            self.__temperature_map[temp] = mode
+        # Need lowest, second lowest, and highest to set thermostat ranges
+        keys = sorted(self.__temp_map.keys())
+        tmin = keys[0]
+        t1 = keys[1]
+        tmax = keys[-1]
+        
+        # The below min, and above max ranges are special
+        self.__ranges = {
+            lambda t: t < t1 + fhyst:
+                lambda t: self.__temp_map[tmin] if t < t1 + fhyst else False,
+            lambda t: t >= tmax + fhyst:
+                lambda t: self.__temp_map[tmax] if t > tmax - rhyst else False,
+        }
+        
+        # Remaining hysteresis ranges filled in dynamically
+        for i in range(1, len(keys)-1, 2):
+            forward = lambda t: t >= (keys[i] + fhyst) and t < (keys[i+1] + fhyst)
+            reverse = lambda t: self.__temp_map[keys[i]] if t >= (keys[i] - rhyst) and t < (keys[i+1] + fhyst) else False
+            self.__ranges[forward] = reverse
+        
+        # Set the mode to a function which always returns False for int
+        self.__hrange = callable
         
     def mode(self, temperature):
-        if temperature <= self.__min:
-            return self.__temperature_map[self.__min]
-        elif temperature >= self.__max:
-            return self.__temperature_map[self.__max]
-        return self.__temperature_map[temperature]
+        mode = self.__hrange(temperature)
+        if not mode:
+            self.__hrange = next(self.__ranges[f] for f in self.__ranges.keys() if f(temperature))
+            return self.__hrange(temperature)
+        return mode
 
 
 class VoltageSwitch():
@@ -126,33 +145,18 @@ class Win32HID():
     # USB Device works, but HID device is more specific. Both listed anyway
     GUID_DEVINTERFACE_USB_DEVICE = "{A5DCBF10-6530-11D2-901F-00C04FB951ED}"
     GUID_DEVINTERFACE_HID = "{4D1E55B2-F16F-11CF-88CB-001111000030}"
-    
-    # HID Device type string
-    HID_DEVICE_CLASS = '\\\\?\\HID'
-    
-    # Teensy multiple-interface ID (00 for HID, and 01 for serial emulation)
-    # https://docs.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers#multiple-interface-usb-devices
-    INTERFACE = 'MI_00'
 
     def __init__(self, vid=0x16C0, pid=0x0486):
-        # First convert IDs into a format we can detect in device name
+        # Convert IDs into a format we can detect in device name
         try:
-            self.ids = [
-                f"VID_{hex(int(vid))[2:].upper()}",
-                f"PID_{hex(int(pid))[2:].upper()}",
-                Win32HID.INTERFACE
-            ]
+            self.vid, self.pid = map(lambda x,y: f"{x}_{int(y):04X}",["VID","PID"],[vid,pid])
         except:
-            self.ids = [
-                f"VID_{hex(int(vid, 0))[2:].upper()}",
-                f"PID_{hex(int(pid, 0))[2:].upper()}",
-                Win32HID.INTERFACE
-            ]
+            self.vid, self.pid = map(lambda x,y: f"{x}_{int(y, 0):04X}",["VID","PID"],[vid,pid])
     
         # Create a window class for receiving messages
         self.wc = win32gui.WNDCLASS()
         self.wc.hInstance = win32api.GetModuleHandle(None)
-        self.wc.lpszClassName = "usbnotifier"
+        self.wc.lpszClassName = "win32hidnotifier"
         self.wc.lpfnWndProc = {win32con.WM_DEVICECHANGE:self.__devicechange}
         
         # Register the window class
@@ -190,12 +194,13 @@ class Win32HID():
                 
 
     def __matchingdevice(self, name):
-        # Name looks like:
+        # Names looks like:
         # '\\\\?\\HID#VID_16C0&PID_0486&MI_01#7&2d928156&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+        # https://docs.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers#multiple-interface-usb-devices
         chunks = name.split("#")
-        if len(chunks) > 2 and chunk[0] == Win32HID.HID_DEVICE_CLASS:
+        if len(chunks) > 2 and chunks[-1] == Win32HID.GUID_DEVINTERFACE_HID.lower():
             ids = chunks[1].split("&")
-            if all(id in ids for id in self.ids):
+            if all(id in ids for id in self.ids) and all(id == "MI_00" for id in self.ids if id.startswith("MI_")):
                 return True
         return False
 
@@ -204,7 +209,7 @@ class Win32HID():
         info = win32gui_struct.UnpackDEV_BROADCAST(lParam)
         print("Device change notification:", wParam, str(info))
         
-        if info.devicetype == win32con.DBT_DEVTYP_DEVICEINTERFACE:
+        if info.devicetype == win32con.DBT_DEVTYP_DEVICEINTERFACE and self.__matchingdevice(info.name):
             if wParam == win32con.DBT_DEVICEREMOVECOMPLETE:
                 print("Device is being removed")
             elif wParam == win32con.DBT_DEVICEARRIVAL:
