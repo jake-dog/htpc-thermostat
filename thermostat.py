@@ -59,15 +59,15 @@ class Thermostat():
         # The below min, and above max ranges are special
         self.__ranges = {
             lambda t: t < t1 + fhyst:
-                lambda t: self.__temp_map[tmin] if t < t1 + fhyst else False,
+                lambda t: self.__temp_map[tmin] if t < (t1 + fhyst) else False,
             lambda t: t >= tmax + fhyst:
-                lambda t: self.__temp_map[tmax] if t > tmax - rhyst else False,
+                lambda t: self.__temp_map[tmax] if t > (tmax - rhyst) else False,
         }
         
         # Remaining hysteresis ranges filled in dynamically
         for i in range(1, len(keys)-1, 2):
             forward = lambda t: t >= (keys[i] + fhyst) and t < (keys[i+1] + fhyst)
-            reverse = lambda t: self.__temp_map[keys[i]] if t >= (keys[i] - rhyst) and t < (keys[i+1] + fhyst) else False
+            reverse = lambda t: self.__temp_map[keys[i]] if t > (keys[i] - rhyst) and t < (keys[i+1] + fhyst) else False
             self.__ranges[forward] = reverse
         
         # Set the mode to a function which always returns False for int
