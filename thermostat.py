@@ -14,7 +14,6 @@ if sys.maxsize > 2**32:
 # https://docs.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows
 import win32gui
 import win32con
-import win32file
 import win32api
 import win32gui_struct
 
@@ -39,41 +38,44 @@ class Thermostat():
         fhyst = int(kwargs.pop("forward_hysteresis", 0))
         rhyst = int(kwargs.pop("reverse_hysteresis", 0))
         
-        self.__temp_map = {}
+        self.__tmap = {}
         
         for i in range(0, len(args), 2):
-            self.__temp_map[int(args[i+1])] = args[i]
+            self.__tmap[int(args[i+1])] = args[i]
             
         for k, v in kwargs.items():
-            self.__temp_map[int(v)] = k
+            self.__tmap[int(v)] = k
         
-        if len(self.__temp_map.keys()) < 2:
+        if len(self.__tmap.keys()) < 2:
             raise Exception("Thermostat requires at least 2 settings (hi/lo)")
         
         # Need lowest, second lowest, and highest to set thermostat ranges
-        keys = sorted(self.__temp_map.keys())
+        keys = sorted(self.__tmap.keys())
         tmin = keys[0]
         t1 = keys[1]
         tmax = keys[-1]
         
+        # Simplifying
+        fail = (None, False)
+        
         # The below min, and above max ranges are special
         self.__ranges = {
             lambda t: t < t1 + fhyst:
-                lambda t: (self.__temp_map[tmin], True) if t < (t1 + fhyst) else (None, False),
+                lambda t: (self.__tmap[tmin], True) if t < (t1 + fhyst) else fail,
             lambda t: t >= tmax + fhyst:
-                lambda t: (self.__temp_map[tmax], True) if t > (tmax - rhyst) else (None, False),
+                lambda t: (self.__tmap[tmax], True) if t > (tmax - rhyst) else fail,
         }
         
         # Remaining hysteresis ranges filled in dynamically
         def middle_range(low, hi, target):
             forward = lambda t: t >= (low + fhyst) and t < (hi + fhyst)
-            reverse = lambda t: (self.__temp_map[low], True) if t > (low - rhyst) and t < (hi + fhyst) else (None, False)
+            reverse = lambda t: (self.__tmap[low], True) if t > (low - rhyst) and t < (hi + fhyst) else fail
             target[forward] = reverse
         for i in range(1, len(keys)-1):
             middle_range(keys[i], keys[i+1], self.__ranges)
         
         # Set the mode to a function which always returns False
-        self.__hrange = lambda t: (None, False)
+        self.__hrange = lambda t: fail
         
     def mode(self, temperature, changes=True, unchanged=None):
         newmode, hasmode = self.__hrange(temperature)
@@ -228,6 +230,10 @@ def unknown_switch(*args, **kwargs):
     raise Exception("Unknown switch state")
 
 
+def nop(*args, **kwargs):
+    pass
+
+
 def main(argv=None):
     config = configparser.ConfigParser()
     config.read('thermostat.ini')
@@ -236,22 +242,16 @@ def main(argv=None):
     vs = VoltageSwitch(**config['microcontroller'])
     s = TemperatureSensor(**config['probe'])
     
-    mode = t.mode(s.value)
     switch = {
         '12V': vs.set12v,
         '5V': vs.set5v,
         '0V': vs.set0v
+        None: nop
     }
-    switch.get(mode, unknown_switch)(mode)
     
-    # TODO Some hysteresis to prevent relay chatter if temperature is
-    # oscillating at switch point.
     while True:
         time.sleep(2)
-        new_mode = t.mode(s.reading())
-        if mode != new_mode:
-            mode = new_mode
-            switch.get(mode, unknown_switch)(mode)
+        switch.get(t.mode(s.reading()), unknown_switch)()
 
 
 if __name__ == '__main__':
