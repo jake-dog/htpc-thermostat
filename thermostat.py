@@ -4,6 +4,7 @@
 import configparser
 import sys
 import time
+import traceback
 
 # OpenHardwareMonitorLib.dll is only 32-bit, so application must be 32-bit!
 if sys.maxsize > 2**32:
@@ -16,6 +17,9 @@ import win32gui
 import win32con
 import win32api
 import win32gui_struct
+
+# To run the win32 window messagepump should be in its own thread
+import threading
 
 # Needs 32-bit hidapi.dll and lib in same directory as binary, or os.getcwd()
 # https://docs.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order#standard-search-order-for-desktop-applications
@@ -91,9 +95,10 @@ class Thermostat():
 
 
 class VoltageSwitch():
-    v12 = ctypes.create_string_buffer(b'\x01', 64)
-    v5 = ctypes.create_string_buffer(b'\x00', 64)
-    v0 = ctypes.create_string_buffer(b'\x02', 64)
+    # Didn't lookup the byte order and since only looking for bytes . . .
+    v12 = ctypes.create_string_buffer(b'\x01'*64, 64)
+    v5 = ctypes.create_string_buffer(b'\x00'*64, 64)
+    v0 = ctypes.create_string_buffer(b'\x02'*64, 64)
 
     def __init__(self, vid=0x16C0, pid=0x0486):
         try:
@@ -105,12 +110,15 @@ class VoltageSwitch():
         self.__device.close()
     
     def set12v(self):
+        print("Setting voltage switch to 12V")
         return self.__device.write(VoltageSwitch.v12)
     
     def set5v(self):
+        print("Setting voltage switch to 5V")
         return self.__device.write(VoltageSwitch.v5)
     
     def set0v(self):
+        print("Setting voltage switch to 0V")
         return self.__device.write(VoltageSwitch.v0)
 
 
@@ -148,7 +156,7 @@ class TemperatureSensor():
         return self.value
 
 
-class Win32HID():
+class Win32HID(threading.Event):
     # **Everything is added to self to keep python from doing GC!!**
 
     # USB Device works, but HID device is more specific. Both listed anyway
@@ -158,9 +166,14 @@ class Win32HID():
     def __init__(self, vid=0x16C0, pid=0x0486):
         # Convert IDs into a format we can detect in device name
         try:
-            self.vid, self.pid = map(lambda x,y: f"{x}_{int(y):04X}",["VID","PID"],[vid,pid])
+            self.ids = list(map(lambda x,y: f"{x}_{int(y):04X}",["VID","PID"],[vid,pid]))
+            vid, pid = map(lambda x: int(x),[vid,pid])
         except:
-            self.vid, self.pid = map(lambda x,y: f"{x}_{int(y, 0):04X}",["VID","PID"],[vid,pid])
+            self.ids = list(map(lambda x,y: f"{x}_{int(y, 0):04X}",["VID","PID"],[vid,pid]))
+            vid, pid = map(lambda x: int(x, 0),[vid,pid])
+    
+        # Initialize the base class event object
+        super().__init__()
     
         # Create a window class for receiving messages
         self.wc = win32gui.WNDCLASS()
@@ -184,23 +197,15 @@ class Win32HID():
         self.filter = win32gui_struct.PackDEV_BROADCAST_DEVICEINTERFACE(Win32HID.GUID_DEVINTERFACE_HID)
         self.hdev = win32gui.RegisterDeviceNotification(self.hwnd, self.filter,
                                                         win32con.DEVICE_NOTIFY_WINDOW_HANDLE)
-        
-        # Run the message loop
-        #while True:
-        #    try:
-        #        win32gui.PumpWaitingMessages()
-                # TODO should use win32event.MsgWaitForMultipleObjects
-        #        time.sleep(0.25)
-        #    except:
-        #        win32gui.DestroyWindow(self.hwnd)
-        #        win32gui.UnregisterClass(self.wc.lpszClassName, None)
 
-                
-    def messageloop(self):
-        #https://stackoverflow.com/questions/51535713/pumpmessages-in-new-thread
-        # PumpMessages runs until PostQuitMessage() is called by someone.
-        win32gui.PumpMessages()   
-                
+        if hid.enumerate(vid, pid):
+            super().set()
+
+
+    # Added only for ergonomics
+    def attached(self):
+        return self.is_set()
+
 
     def __matchingdevice(self, name):
         # Names looks like:
@@ -209,20 +214,23 @@ class Win32HID():
         chunks = name.split("#")
         if len(chunks) > 2 and chunks[-1] == Win32HID.GUID_DEVINTERFACE_HID.lower():
             ids = chunks[1].split("&")
-            if all(id in ids for id in self.ids) and all(id == "MI_00" for id in self.ids if id.startswith("MI_")):
+            if all(id in ids for id in self.ids) and all(id == "MI_00" for id in ids if id.startswith("MI_")):
                 return True
         return False
+
 
     # WM_DEVICECHANGE message handler.
     def __devicechange(self, hWnd, msg, wParam, lParam):
         info = win32gui_struct.UnpackDEV_BROADCAST(lParam)
-        print("Device change notification:", wParam, str(info))
+        #print("Device change notification:", wParam, str(info))
         
         if info.devicetype == win32con.DBT_DEVTYP_DEVICEINTERFACE and self.__matchingdevice(info.name):
             if wParam == win32con.DBT_DEVICEREMOVECOMPLETE:
                 print("Device is being removed")
+                self.clear()
             elif wParam == win32con.DBT_DEVICEARRIVAL:
                 print("Device is being added")
+                self.set()
         return True
         
 
@@ -234,24 +242,61 @@ def nop(*args, **kwargs):
     pass
 
 
+def mainloop(w32hid, voltswitch, sensor, thermostat):
+    while True:
+        # Wait for device to be attached
+        w32hid.wait()
+        
+        # Create the device handle
+        try:
+            vs = voltswitch()
+        except:
+            traceback.print_exc()
+            time.sleep(30)
+            continue
+        
+        # On the first reading always set the switch state
+        changes = False
+    
+        switch = {
+            '12v': vs.set12v,
+            '5v': vs.set5v,
+            '0v': vs.set0v,
+            None: nop,
+        }
+        
+        while True:
+            time.sleep(2)
+            try:
+                # Set the switch state by feeding sensor data into thermostat
+                switch.get(thermostat.mode(sensor.reading(), changes), unknown_switch)()
+                
+                # From now on, only set switch state on changes
+                changes = True
+            except:
+                traceback.print_exc()
+                if not w32hid.attached():
+                    break
+
+
 def main(argv=None):
     config = configparser.ConfigParser()
     config.read('thermostat.ini')
     
     t = Thermostat(**config['thermostat'])
-    vs = VoltageSwitch(**config['microcontroller'])
+    w = Win32HID(**config['microcontroller'])
     s = TemperatureSensor(**config['probe'])
+    m = lambda: VoltageSwitch(**config['microcontroller'])
     
-    switch = {
-        '12V': vs.set12v,
-        '5V': vs.set5v,
-        '0V': vs.set0v
-        None: nop
-    }
+    loop = threading.Thread(target=mainloop, args=(w, m, s, t))
+    loop.setDaemon(True)
+    loop.name = "VoltageSwitch"
+    loop.start()
     
-    while True:
-        time.sleep(2)
-        switch.get(t.mode(s.reading()), unknown_switch)()
+    # Having trouble with thread scope; this only runs in main thread
+    # or when class creating window is child of threading.Thread.
+    # PumpMessages runs until PostQuitMessage() is called by someone.
+    win32gui.PumpMessages()
 
 
 if __name__ == '__main__':
