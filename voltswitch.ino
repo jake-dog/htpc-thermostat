@@ -56,12 +56,15 @@ char state = 0;
 void loop() {
   int n;
   char newState = 0;
+  
+  // WARNING: Always drive a pin low before setting another pin high to avoid
+  // transient HIGH/HIGH (7V) which may damage the PSU.
 
   // If v12Pin or v0Pin are jumpered, they override HID
   if (!digitalRead(v12Pin) && (state != twelveV)) {
     Serial.println("Doing 12V");
-    digitalWrite(relay1, HIGH);
     digitalWrite(relay2, LOW);
+    digitalWrite(relay1, HIGH);
     state = twelveV;
   } else if (!digitalRead(v0Pin) && (state != zeroV)) {
     Serial.println("Doing 0V");
