@@ -280,9 +280,30 @@ def mainloop(w32hid, voltswitch, sensor, thermostat):
 
 
 def main(argv=None):
+    sections = ['thermostat', 'microcontroller', 'probe']
     config = configparser.ConfigParser()
     config.read('thermostat.ini')
     
+    if not all(config.has_section(s) for s in sections):
+        print("Config file 'thermostat.ini' not found; creating a new one.")
+        config['thermostat'] = {
+            "12V": "60",
+            "5V": "45",
+            "0V": "0",
+            "reverse_hysteresis": "5"
+        }
+        config['microcontroller'] = {
+            "vid": "0x16C0",
+            "pid": "0x0486"
+        }
+        config['probe'] = {
+            "device": "Intel Core i7-6600U",
+            "sensor": "CPU Package"
+        }
+        with open('thermostat.ini', 'w') as configfile:
+            config.write(configfile)
+        sys.exit(1)
+
     t = Thermostat(**config['thermostat'])
     w = Win32HID(**config['microcontroller'])
     s = TemperatureSensor(**config['probe'])
