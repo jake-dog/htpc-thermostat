@@ -94,32 +94,31 @@ class Thermostat():
         return mode
 
 
-class VoltageSwitch():
+class VoltageSwitch(hid.Device):
     # Didn't lookup the byte order and since only looking for bytes . . .
     v12 = ctypes.create_string_buffer(b'\x01'*64, 64)
     v5 = ctypes.create_string_buffer(b'\x00'*64, 64)
     v0 = ctypes.create_string_buffer(b'\x02'*64, 64)
 
-    def __init__(self, vid=0x16C0, pid=0x0486):
-        try:
-            self.__device = hid.Device(vid=int(vid), pid=int(pid))
-        except ValueError:
-            self.__device = hid.Device(vid=int(vid, 0), pid=int(pid, 0))
-    
-    def close(self):
-        self.__device.close()
+    def __init__(self, vid=None, pid=None, serial=None, path=None):
+        if vid and pid:
+            try:
+                vid, pid = map(int, vid, pid)
+            except ValueError:
+                vid, pid = map(lambda i: int(i, 0), vid, pid)
+        super().__init__(vid, pid, serial, path)
     
     def set12v(self):
         print("Setting voltage switch to 12V")
-        return self.__device.write(VoltageSwitch.v12)
+        return self.write(VoltageSwitch.v12)
     
     def set5v(self):
         print("Setting voltage switch to 5V")
-        return self.__device.write(VoltageSwitch.v5)
+        return self.write(VoltageSwitch.v5)
     
     def set0v(self):
         print("Setting voltage switch to 0V")
-        return self.__device.write(VoltageSwitch.v0)
+        return self.write(VoltageSwitch.v0)
 
 
 class TemperatureSensor():
