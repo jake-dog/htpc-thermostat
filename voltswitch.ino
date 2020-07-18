@@ -1,13 +1,9 @@
-/* Basic Raw HID Example
+/* Based on: Basic Raw HID Example
+
    Teensy can send/receive 64 byte packets with a
    dedicated program running on a PC or Mac.
 
    You must select Raw HID from the "Tools > USB Type" menu
-
-   Optional: LEDs should be connected to pins 0-7,
-   and analog signals to the analog inputs.
-
-   This example code is in the public domain.
 */
 
 // Voltage switch states.
