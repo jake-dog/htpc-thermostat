@@ -162,17 +162,40 @@ class Win32HID(threading.Event):
     GUID_DEVINTERFACE_USB_DEVICE = "{A5DCBF10-6530-11D2-901F-00C04FB951ED}"
     GUID_DEVINTERFACE_HID = "{4D1E55B2-F16F-11CF-88CB-001111000030}"
 
-    def __init__(self, vid=0x16C0, pid=0x0486):
-        # Convert IDs into a format we can detect in device name
-        try:
-            self.ids = list(map(lambda x,y: f"{x}_{int(y):04X}",["VID","PID"],[vid,pid]))
-            vid, pid = map(lambda x: int(x),[vid,pid])
-        except:
-            self.ids = list(map(lambda x,y: f"{x}_{int(y, 0):04X}",["VID","PID"],[vid,pid]))
-            vid, pid = map(lambda x: int(x, 0),[vid,pid])
-    
+    def __init__(self, device=hid.Device, vid=None, pid=None, path=None):
         # Initialize the base class event object
         super().__init__()
+    
+        # Path must be convertable to bytes, and vid/pid integers
+        if path:
+            try:
+                self.__path = path.lower().encode()
+            except AttributeError:
+                self.__path = path.lower()
+            try:
+                with hid.Device(path=self.__path):
+                    super().set()
+            except hid.HIDException:
+                pass
+        elif vid and pid:
+            try:
+                v, p = map(lambda x: int(x),[vid,pid])
+            except:
+                v, p = map(lambda x: int(x, 0),[vid,pid])
+            
+            # The IDs are only used to find the full device path
+            self.__ids = list(map(lambda x,y: f"{x}_{y:04x}".encode(),["vid","pid"],[v,p]))
+            
+            # Always use path for connection; check for device at startup
+            self.__path = None
+            for d in hid.enumerate(vid=v, pid=p):
+                if self.__matchingdevice(d["path"]):
+                    super().set()
+                    break
+        else:
+            raise Exception("VID, PID or device path required")
+        
+        self.__dev = device
     
         # Create a window class for receiving messages
         self.wc = win32gui.WNDCLASS()
@@ -197,24 +220,37 @@ class Win32HID(threading.Event):
         self.hdev = win32gui.RegisterDeviceNotification(self.hwnd, self.filter,
                                                         win32con.DEVICE_NOTIFY_WINDOW_HANDLE)
 
-        if hid.enumerate(vid, pid):
-            super().set()
-
 
     # Added only for ergonomics
     def attached(self):
         return self.is_set()
+        
+    
+    def device(self, timeout=None):
+        if not self.wait(timeout):
+            raise Exception("Device not attached")
+        return self.__dev(path=self.__path)
 
 
     def __matchingdevice(self, name):
         # Names looks like:
         # '\\\\?\\HID#VID_16C0&PID_0486&MI_01#7&2d928156&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}'
         # https://docs.microsoft.com/en-us/windows-hardware/drivers/install/standard-usb-identifiers#multiple-interface-usb-devices
-        chunks = name.split("#")
-        if len(chunks) > 2 and chunks[-1] == Win32HID.GUID_DEVINTERFACE_HID.lower():
-            ids = chunks[1].split("&")
-            if all(id in ids for id in self.ids) and all(id == "MI_00" for id in ids if id.startswith("MI_")):
-                return True
+        try:
+            path = name.encode().lower()
+        except AttributeError:
+            path = name.lower()
+        
+        if self.__path and self.__path == path:
+            return True
+        elif self.__ids:
+            chunks = path.split(b'#')
+            if len(chunks) > 2 and chunks[-1] == Win32HID.GUID_DEVINTERFACE_HID.encode().lower():
+                ids = chunks[1].split(b'&')
+                if (all(id in ids for id in self.__ids) and 
+                    all(id == b'mi_00' for id in ids if id.startswith(b'mi_'))):
+                    self.__path = path
+                    return True
         return False
 
 
@@ -223,7 +259,8 @@ class Win32HID(threading.Event):
         info = win32gui_struct.UnpackDEV_BROADCAST(lParam)
         #print("Device change notification:", wParam, str(info))
         
-        if info.devicetype == win32con.DBT_DEVTYP_DEVICEINTERFACE and self.__matchingdevice(info.name):
+        if (info.devicetype == win32con.DBT_DEVTYP_DEVICEINTERFACE and
+            self.__matchingdevice(info.name)):
             if wParam == win32con.DBT_DEVICEREMOVECOMPLETE:
                 print("Device is being removed")
                 self.clear()
@@ -241,41 +278,32 @@ def nop(*args, **kwargs):
     pass
 
 
-def mainloop(w32hid, voltswitch, sensor, thermostat):
+def mainloop(w32hid, sensor, thermostat):
     while True:
-        # Wait for device to be attached
-        w32hid.wait()
-        
-        # Create the device handle
         try:
-            vs = voltswitch()
+            # Wait for the device, connect, then enter the context
+            with w32hid.device() as vs:
+                # On the first reading always set the switch state
+                changes = False
+            
+                switch = {
+                    '12v': vs.set12v,
+                    '5v': vs.set5v,
+                    '0v': vs.set0v,
+                    None: nop,
+                }
+                
+                while True:
+                    time.sleep(2)
+                    
+                    # Set the switch state by feeding sensor data into thermostat
+                    switch.get(thermostat.mode(sensor.reading(), changes), unknown_switch)()
+                    
+                    # From now on, only set switch state on changes
+                    changes = True
         except:
             traceback.print_exc()
             time.sleep(30)
-            continue
-        
-        # On the first reading always set the switch state
-        changes = False
-    
-        switch = {
-            '12v': vs.set12v,
-            '5v': vs.set5v,
-            '0v': vs.set0v,
-            None: nop,
-        }
-        
-        while True:
-            time.sleep(2)
-            try:
-                # Set the switch state by feeding sensor data into thermostat
-                switch.get(thermostat.mode(sensor.reading(), changes), unknown_switch)()
-                
-                # From now on, only set switch state on changes
-                changes = True
-            except:
-                traceback.print_exc()
-                if not w32hid.attached():
-                    break
 
 
 def main(argv=None):
@@ -304,11 +332,10 @@ def main(argv=None):
         sys.exit(1)
 
     t = Thermostat(**config['thermostat'])
-    w = Win32HID(**config['microcontroller'])
+    w = Win32HID(device=VoltageSwitch, **config['microcontroller'])
     s = TemperatureSensor(**config['probe'])
-    m = lambda: VoltageSwitch(**config['microcontroller'])
     
-    loop = threading.Thread(target=mainloop, args=(w, m, s, t))
+    loop = threading.Thread(target=mainloop, args=(w, s, t))
     loop.setDaemon(True)
     loop.name = "VoltageSwitch"
     loop.start()
