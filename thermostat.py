@@ -18,6 +18,9 @@ import win32con
 import win32api
 import win32gui_struct
 
+# Just for creating dialog popups
+import win32ui
+
 # To run the win32 window messagepump should be in its own thread
 import threading
 
@@ -36,7 +39,7 @@ from OpenHardwareMonitor import Hardware
 class Thermostat():
     def __init__(self, *args, **kwargs):
         if len(args) % 2:
-            raise Exception("Arugments must be in pairs")
+            raise Exception("Thermostat arguments must be in pairs")
         
         # Allow forward and reverse hysteresis
         fhyst = int(kwargs.pop("forward_hysteresis", 0))
@@ -137,7 +140,8 @@ class TemperatureSensor():
         try:
             self.__hardware = next(h for h in self.__handle.Hardware if h.Name == device)
         except:
-            raise Exception("Device not detected")
+            raise Exception("Device '%s' not detected.\r\n\r\nAvailable devices:\r\n%s"
+                            %(device, '\r\n'.join(sorted(f"- {h.Name}" for h in self.__handle.Hardware))))
             
         # Poll device
         self.__hardware.Update()
@@ -145,7 +149,8 @@ class TemperatureSensor():
         try:
             self.__sensor = next(s for s in self.__hardware.Sensors if s.Index == 2 and s.Name == sensor)
         except:
-            raise Exception("Sensor not found")
+            raise Exception("Sensor '%s' not found.\r\n\r\nAvailable sensors:\r\n%s"
+                            %(sensor, '\r\n'.join(sorted(f"- {s.Name}" for s in self.__hardware.Sensors if s.Index == 2))))
         
         self.value = self.__sensor.Value
     
@@ -193,7 +198,7 @@ class Win32HID(threading.Event):
                     super().set()
                     break
         else:
-            raise Exception("VID, PID or device path required")
+            raise Exception("VID, PID or path required for HID device")
         
         self.__dev = device
     
@@ -329,11 +334,17 @@ def main(argv=None):
         }
         with open('thermostat.ini', 'w') as configfile:
             config.write(configfile)
+        win32ui.MessageBox("Config file 'thermostat.ini' not found. A new one has been created",
+                           "Startup Error", win32con.MB_ICONERROR)
         sys.exit(1)
 
-    t = Thermostat(**config['thermostat'])
-    w = Win32HID(device=VoltageSwitch, **config['microcontroller'])
-    s = TemperatureSensor(**config['probe'])
+    try:
+        s = TemperatureSensor(**config['probe'])
+        w = Win32HID(device=VoltageSwitch, **config['microcontroller'])
+        t = Thermostat(**config['thermostat'])
+    except:
+        win32ui.MessageBox(sys.exc_info()[1].args[0], "Startup Error", win32con.MB_ICONERROR)
+        sys.exit(1)
     
     loop = threading.Thread(target=mainloop, args=(w, s, t))
     loop.setDaemon(True)
