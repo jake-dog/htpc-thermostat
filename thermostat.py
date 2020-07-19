@@ -184,7 +184,7 @@ class Win32HID(threading.Event):
                 v, p = map(lambda x: int(x, 0),[vid,pid])
             
             # The IDs are only used to find the full device path
-            self.__ids = list(map(lambda x,y: f"{x}_{y:04x}".encode(),["vid","pid"],[v,p]))
+            self.__ids = list(f"{x}_{y:04x}".encode() for x, y in zip(["vid","pid"],[v,p]))
             
             # Always use path for connection; check for device at startup
             self.__path = None
