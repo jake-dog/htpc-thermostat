@@ -125,13 +125,13 @@ class VoltageSwitch(hid.Device):
 
 
 class TemperatureSensor():
-    def __init__(self, device=None, sensor=None):
+    def __init__(self, device=None, sensor=None, cpu=True, ram=False, gpu=False, mobo=False, disk=False):
         self.__handle = Hardware.Computer()
-        self.__handle.CPUEnabled = True
-        #self.__handle.MainboardEnabled = True
-        #self.__handle.RAMEnabled = True
-        #self.__handle.GPUEnabled = True
-        #self.__handle.HDDEnabled = True
+        self.__handle.CPUEnabled = cpu
+        self.__handle.MainboardEnabled = mobo
+        self.__handle.RAMEnabled = ram
+        self.__handle.GPUEnabled = gpu
+        self.__handle.HDDEnabled = disk
         self.__handle.Open()
         
         if len(self.__handle.Hardware) < 1:
@@ -313,6 +313,7 @@ def mainloop(w32hid, sensor, thermostat):
 
 def main(argv=None):
     sections = ['thermostat', 'microcontroller', 'probe']
+    types = ["cpu", "ram", "gpu", "mobo", "disk"]
     config = configparser.ConfigParser()
     config.read('thermostat.ini')
     
@@ -328,10 +329,10 @@ def main(argv=None):
             "vid": "0x16C0",
             "pid": "0x0486"
         }
-        config['probe'] = {
+        config['probe'] = dict({
             "device": "Intel Core i7-6600U",
             "sensor": "CPU Package"
-        }
+        },**dict((t, "false" if t != "cpu" else "true") for t in types))
         with open('thermostat.ini', 'w') as configfile:
             config.write(configfile)
         win32ui.MessageBox("Config file 'thermostat.ini' not found. A new one has been created",
@@ -339,7 +340,8 @@ def main(argv=None):
         sys.exit(1)
 
     try:
-        s = TemperatureSensor(**config['probe'])
+        sensor_types = dict((t, config.getboolean("probe", t, fallback=False)) for t in types)
+        s = TemperatureSensor(**dict(config["probe"], **sensor_types))
         w = Win32HID(device=VoltageSwitch, **config['microcontroller'])
         t = Thermostat(**config['thermostat'])
     except:
