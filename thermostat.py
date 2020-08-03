@@ -353,7 +353,7 @@ class TrayThermostat(threading.Thread):
 
         # Create the Window.
         style = win32con.WS_OVERLAPPED | win32con.WS_SYSMENU
-        self.hwnd = win32gui.CreateWindow( wc.lpszClassName, "Taskbar Demo", style, \
+        self.hwnd = win32gui.CreateWindow( wc.lpszClassName, "HTPC Thermostat Taskbar", style, \
                 0, 0, win32con.CW_USEDEFAULT, win32con.CW_USEDEFAULT, \
                 0, 0, hinst, None)
         win32gui.UpdateWindow(self.hwnd)
@@ -398,10 +398,13 @@ class TrayThermostat(threading.Thread):
                                 vs[self.__thermostat.mode(self.__sensor.reading(), changes)]()
                             elif self.__mode == TrayThermostat.V12:
                                 vs.set12v()
+                                changes = False
                             elif self.__mode == TrayThermostat.V5:
                                 vs.set5v()
+                                changes = False
                             elif self.__mode == TrayThermostat.V0:
                                 vs.set0v()
+                                changes = False
             except:
                 traceback.print_exc()
             
@@ -414,23 +417,14 @@ class TrayThermostat(threading.Thread):
         # Try and find a custom icon
         hinst =  win32api.GetModuleHandle(None)
         iconPathName = os.path.abspath(".\\main.ico" )
-        #print(iconPathName)
-        #iconPathName = os.path.abspath(os.path.join( os.path.split(sys.executable)[0], "pyc.ico" ))
-        #if not os.path.isfile(iconPathName):
-            # Look in DLLs dir, a-la py 2.5
-        #    iconPathName = os.path.abspath(os.path.join( os.path.split(sys.executable)[0], "DLLs", "pyc.ico" ))
-        #if not os.path.isfile(iconPathName):
-            # Look in the source tree.
-        #    iconPathName = os.path.abspath(os.path.join( os.path.split(sys.executable)[0], "..\\PC\\pyc.ico" ))
         if os.path.isfile(iconPathName):
             icon_flags = win32con.LR_LOADFROMFILE | win32con.LR_DEFAULTSIZE
             hicon = win32gui.LoadImage(hinst, iconPathName, win32con.IMAGE_ICON, 0, 0, icon_flags)
         else:
-            print("Can't find a Python icon file - using default")
-            hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
+            hicon = win32gui.ExtractIcon(hinst, sys.executable, 0)
 
         flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
-        nid = (self.hwnd, 0, flags, win32con.WM_USER+20, hicon, "Python Demo")
+        nid = (self.hwnd, 0, flags, win32con.WM_USER+20, hicon, "HTPC Thermostat")
         try:
             win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, nid)
         except win32gui.error:
