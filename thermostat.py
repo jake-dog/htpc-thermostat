@@ -5,6 +5,7 @@ import configparser
 import sys
 import time
 import traceback
+import os
 
 # OpenHardwareMonitorLib.dll is only 32-bit, so application must be 32-bit!
 if sys.maxsize > 2**32:
@@ -17,6 +18,10 @@ import win32gui
 import win32con
 import win32api
 import win32gui_struct
+
+# For creating the system tray icon
+import win32event
+import winerror
 
 # Just for creating dialog popups
 import win32ui
@@ -109,6 +114,12 @@ class VoltageSwitch(hid.Device):
                 vid, pid = map(int, vid, pid)
             except ValueError:
                 vid, pid = map(lambda i: int(i, 0), vid, pid)
+        self.__switch = {
+                            '12v': self.set12v,
+                            '5v': self.set5v,
+                            '0v': self.set0v,
+                            None: lambda *args: None,
+                        }
         super().__init__(vid, pid, serial, path)
     
     def set12v(self):
@@ -122,6 +133,11 @@ class VoltageSwitch(hid.Device):
     def set0v(self):
         print("Setting voltage switch to 0V")
         return self.write(VoltageSwitch.v0)
+    
+    def __getitem__(self, key):
+        if key:
+            return self.__switch.get[key]
+        return nop
 
 
 class TemperatureSensor():
@@ -273,15 +289,200 @@ class Win32HID(threading.Event):
                 print("Device is being added")
                 self.set()
         return True
+
+
+class TrayThermostat(threading.Thread):
+    Automatic = 1023
+    V12 = 1024
+    V5 = 1025
+    V0 = 1026
+    Exit = 1027
+    Connected = 1028
+
+    def __init__(self, w32hid, sensor, thermostat):
+        threading.Thread.__init__(self)
+        self.__w32hid = w32hid
+        self.__sensor = sensor
+        self.__thermostat = thermostat
         
+        # Pre-initialize a dummy event for the ticker based msg pump
+        self.__event = win32event.CreateEvent(None, 0, 0, None)
+    
+    def __wait_msg_pump(self, timeout=2000):
+        # When user does mouseover it runs QS_SENDMESSAGE 0x0040 in a loop . . .
+        # Also we receive ALL mouse clicks . . .
+        rc = win32event.MsgWaitForMultipleObjects(
+                (self.__event,), # list of objects
+                0, # wait all
+                timeout,  # timeout
+                win32event.QS_ALLINPUT, # type of input
+                )
+        if rc == win32event.WAIT_OBJECT_0+1:
+            # Message waiting.
+            if win32gui.PumpWaitingMessages():
+                # Received WM_QUIT, so return True.
+                win32gui.PostMessage(self.__w32hid.hwnd, win32con.WM_QUIT, 0, 0)
+                return True
+    
+    def run(self):
+        self.__mode = TrayThermostat.Automatic
+        self.__connected = False
+    
+        msg_TaskbarRestart = win32gui.RegisterWindowMessage("TaskbarCreated");
+        message_map = {
+                msg_TaskbarRestart: self.OnRestart,
+                win32con.WM_DESTROY: self.OnDestroy,
+                win32con.WM_COMMAND: self.OnCommand,
+                win32con.WM_USER+20 : self.OnTaskbarNotify,
+        }
+        # Register the Window class.
+        wc = win32gui.WNDCLASS()
+        hinst = wc.hInstance = win32api.GetModuleHandle(None)
+        wc.lpszClassName = "HTPCThermostat"
+        wc.style = win32con.CS_VREDRAW | win32con.CS_HREDRAW;
+        wc.hCursor = win32api.LoadCursor( 0, win32con.IDC_ARROW )
+        wc.hbrBackground = win32con.COLOR_WINDOW
+        wc.lpfnWndProc = message_map # could also specify a wndproc.
 
-def unknown_switch(*args, **kwargs):
-    raise Exception("Unknown switch state")
+        # Don't blow up if class already registered to make testing easier
+        try:
+            classAtom = win32gui.RegisterClass(wc)
+        except win32gui.error as err_info:
+            if err_info.winerror!=winerror.ERROR_CLASS_ALREADY_EXISTS:
+                raise
+
+        # Create the Window.
+        style = win32con.WS_OVERLAPPED | win32con.WS_SYSMENU
+        self.hwnd = win32gui.CreateWindow( wc.lpszClassName, "Taskbar Demo", style, \
+                0, 0, win32con.CW_USEDEFAULT, win32con.CW_USEDEFAULT, \
+                0, 0, hinst, None)
+        win32gui.UpdateWindow(self.hwnd)
+        self._DoCreateIcons()
+        
+        # There must be an event to wait for even if its not used. Otherwise
+        # MsgWaitForMultipleObjects will just return immediately.
+        last_poll = 0
+        while True:
+            # If we're here, then we're not connected.
+            self.__connected = False
+            
+            # MsgWaitForMultiple objects will miss events between calls
+            if win32gui.PumpWaitingMessages():
+                win32gui.PostMessage(self.__w32hid.hwnd, win32con.WM_QUIT, 0, 0)
+                return
+        
+            try:
+                # Wait 0.2 seconds for the device (so as not to delay win32 Message Loop)
+                with self.__w32hid.device(timeout=0.2) as vs:
+                    # If we made it here, then we're connected
+                    self.__connected = True
+                    
+                    while True:
+                        # On the first reading always set the switch state
+                        changes = False
+                        
+                        # MsgWaitForMultiple objects will miss events between calls
+                        if win32gui.PumpWaitingMessages():
+                            win32gui.PostMessage(self.__w32hid.hwnd, win32con.WM_QUIT, 0, 0)
+                            return
+                        
+                        # Now we wait . . .
+                        if self.__wait_msg_pump():
+                            return
+                        
+                        if (time.time() * 1000) - last_poll >= 2000:
+                            last_poll = time.time() * 1000
+                            
+                            # Set the voltage switch based on our current mode
+                            if self.__mode == TrayThermostat.Automatic:
+                                vs[self.__thermostat.mode(self.__sensor.reading(), changes)]()
+                            elif self.__mode == TrayThermostat.V12:
+                                vs.set12v()
+                            elif self.__mode == TrayThermostat.V5:
+                                vs.set5v()
+                            elif self.__mode == TrayThermostat.V0:
+                                vs.set0v()
+            except:
+                traceback.print_exc()
+            
+            # Now we wait 300 milliseconds for GUI messages
+            if self.__wait_msg_pump(timeout=300):
+                return
 
 
-def nop(*args, **kwargs):
-    pass
+    def _DoCreateIcons(self):
+        # Try and find a custom icon
+        hinst =  win32api.GetModuleHandle(None)
+        iconPathName = os.path.abspath(".\\main.ico" )
+        #print(iconPathName)
+        #iconPathName = os.path.abspath(os.path.join( os.path.split(sys.executable)[0], "pyc.ico" ))
+        #if not os.path.isfile(iconPathName):
+            # Look in DLLs dir, a-la py 2.5
+        #    iconPathName = os.path.abspath(os.path.join( os.path.split(sys.executable)[0], "DLLs", "pyc.ico" ))
+        #if not os.path.isfile(iconPathName):
+            # Look in the source tree.
+        #    iconPathName = os.path.abspath(os.path.join( os.path.split(sys.executable)[0], "..\\PC\\pyc.ico" ))
+        if os.path.isfile(iconPathName):
+            icon_flags = win32con.LR_LOADFROMFILE | win32con.LR_DEFAULTSIZE
+            hicon = win32gui.LoadImage(hinst, iconPathName, win32con.IMAGE_ICON, 0, 0, icon_flags)
+        else:
+            print("Can't find a Python icon file - using default")
+            hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
 
+        flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
+        nid = (self.hwnd, 0, flags, win32con.WM_USER+20, hicon, "Python Demo")
+        try:
+            win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, nid)
+        except win32gui.error:
+            # This is common when windows is starting, and this code is hit
+            # before the taskbar has been created.
+            print("Failed to add the taskbar icon - is explorer running?")
+            # but keep running anyway - when explorer starts, we get the
+            # TaskbarCreated message.
+
+
+    def OnRestart(self, hwnd, msg, wparam, lparam):
+        self._DoCreateIcons()
+
+
+    def OnDestroy(self, hwnd, msg, wparam, lparam):
+        nid = (self.hwnd, 0)
+        win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, nid)
+        win32gui.PostQuitMessage(0) # Terminate the app.
+
+    def __flag_set(self, mode):
+        return win32con.MF_STRING | win32con.MF_CHECKED if self.__mode == mode else win32con.MF_STRING
+
+    def OnTaskbarNotify(self, hwnd, msg, wparam, lparam):
+        if lparam==win32con.WM_LBUTTONUP:
+            print("You clicked me.")
+        elif lparam==win32con.WM_LBUTTONDBLCLK:
+            print("You double-clicked me - goodbye")
+            win32gui.DestroyWindow(self.hwnd)
+        elif lparam==win32con.WM_RBUTTONUP:
+            print("You right clicked me.")
+            menu = win32gui.CreatePopupMenu()
+            win32gui.AppendMenu( menu, win32con.MF_GRAYED | win32con.MF_STRING, TrayThermostat.Connected, "Connected" if self.__connected else "Disconnected")
+            win32gui.AppendMenu( menu, self.__flag_set(TrayThermostat.Automatic), TrayThermostat.Automatic, "Automatic")
+            win32gui.AppendMenu( menu, self.__flag_set(TrayThermostat.V12), TrayThermostat.V12, "12V")
+            win32gui.AppendMenu( menu, self.__flag_set(TrayThermostat.V5), TrayThermostat.V5, "5V" )
+            win32gui.AppendMenu( menu, self.__flag_set(TrayThermostat.V0), TrayThermostat.V0, "Off" )
+            win32gui.AppendMenu( menu, win32con.MF_STRING, TrayThermostat.Exit, "Exit" )
+            pos = win32gui.GetCursorPos()
+            # See http://msdn.microsoft.com/library/default.asp?url=/library/en-us/winui/menus_0hdi.asp
+            win32gui.SetForegroundWindow(self.hwnd)
+            win32gui.TrackPopupMenu(menu, win32con.TPM_LEFTALIGN, pos[0], pos[1], 0, self.hwnd, None)
+            win32gui.PostMessage(self.hwnd, win32con.WM_NULL, 0, 0)
+        return 1
+
+    def OnCommand(self, hwnd, msg, wparam, lparam):
+        id = win32api.LOWORD(wparam)
+        if id == TrayThermostat.Exit:
+            print("Goodbye")
+            win32gui.DestroyWindow(self.hwnd)
+        else:
+            print("Setting mode -", id)
+            self.__mode = id
 
 def mainloop(w32hid, sensor, thermostat):
     while True:
@@ -348,10 +549,10 @@ def main(argv=None):
         win32ui.MessageBox(sys.exc_info()[1].args[0], "Startup Error", win32con.MB_ICONERROR)
         sys.exit(1)
     
-    loop = threading.Thread(target=mainloop, args=(w, s, t))
-    loop.setDaemon(True)
-    loop.name = "VoltageSwitch"
-    loop.start()
+    t = TrayThermostat(w, s, t)
+    t.name = "VoltageSwitch"
+    t.setDaemon(True)
+    t.start()
     
     # Having trouble with thread scope; this only runs in main thread
     # or when class creating window is child of threading.Thread.
