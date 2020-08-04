@@ -135,9 +135,7 @@ class VoltageSwitch(hid.Device):
         return self.write(VoltageSwitch.v0)
     
     def __getitem__(self, key):
-        if key:
-            return self.__switch.get[key]
-        return nop
+        return self.__switch[key]
 
 
 class TemperatureSensor():
@@ -377,10 +375,10 @@ class TrayThermostat(threading.Thread):
                     # If we made it here, then we're connected
                     self.__connected = True
                     
+                    # On the first reading always set the switch state
+                    changes = False
+                    
                     while True:
-                        # On the first reading always set the switch state
-                        changes = False
-                        
                         # MsgWaitForMultiple objects will miss events between calls
                         if win32gui.PumpWaitingMessages():
                             win32gui.PostMessage(self.__w32hid.hwnd, win32con.WM_QUIT, 0, 0)
@@ -395,7 +393,11 @@ class TrayThermostat(threading.Thread):
                             
                             # Set the voltage switch based on our current mode
                             if self.__mode == TrayThermostat.Automatic:
+                                # Send the sensor reading to the thermostat for the voltage switch
                                 vs[self.__thermostat.mode(self.__sensor.reading(), changes)]()
+                                
+                                # From now on, only set switch state on changes
+                                changes = True
                             elif self.__mode == TrayThermostat.V12:
                                 vs.set12v()
                                 changes = False
