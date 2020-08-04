@@ -394,7 +394,10 @@ class TrayThermostat(threading.Thread):
                             # Set the voltage switch based on our current mode
                             if self.__mode == TrayThermostat.Automatic:
                                 # Send the sensor reading to the thermostat for the voltage switch
-                                vs[self.__thermostat.mode(self.__sensor.reading(), changes)]()
+                                if not vs[self.__thermostat.mode(self.__sensor.reading(), changes)]():
+                                    # If we didn't send a command, check to ensure still connected
+                                    if not self.__w32hid.attached():
+                                        break
                                 
                                 # From now on, only set switch state on changes
                                 changes = True
