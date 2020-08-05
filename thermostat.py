@@ -20,6 +20,7 @@ import win32api
 import win32gui_struct
 
 # For creating the system tray icon
+# https://github.com/mhammond/pywin32/blob/master/win32/Demos/win32gui_taskbar.py
 import win32event
 import winerror
 
@@ -288,7 +289,6 @@ class Win32HID(threading.Event):
                 self.set()
         return True
 
-
 class TrayThermostat(threading.Thread):
     Automatic = 1023
     V12 = 1024
@@ -366,7 +366,6 @@ class TrayThermostat(threading.Thread):
             
             # MsgWaitForMultiple objects will miss events between calls
             if win32gui.PumpWaitingMessages():
-                win32gui.PostMessage(self.__w32hid.hwnd, win32con.WM_QUIT, 0, 0)
                 return
         
             try:
@@ -381,7 +380,6 @@ class TrayThermostat(threading.Thread):
                     while True:
                         # MsgWaitForMultiple objects will miss events between calls
                         if win32gui.PumpWaitingMessages():
-                            win32gui.PostMessage(self.__w32hid.hwnd, win32con.WM_QUIT, 0, 0)
                             return
                         
                         # Now we wait . . .
@@ -395,7 +393,7 @@ class TrayThermostat(threading.Thread):
                             if self.__mode == TrayThermostat.Automatic:
                                 # Send the sensor reading to the thermostat for the voltage switch
                                 if not vs[self.__thermostat.mode(self.__sensor.reading(), changes)]():
-                                    # If we didn't send a command, check to ensure still connected
+                                    # If no command sent, check to ensure still connected
                                     if not self.__w32hid.attached():
                                         break
                                 
@@ -447,6 +445,7 @@ class TrayThermostat(threading.Thread):
     def OnDestroy(self, hwnd, msg, wparam, lparam):
         nid = (self.hwnd, 0)
         win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, nid)
+        win32gui.PostMessage(self.__w32hid.hwnd, win32con.WM_QUIT, 0, 0) # Terminate win32hid
         win32gui.PostQuitMessage(0) # Terminate the app.
 
     def __flag_set(self, mode):
@@ -454,12 +453,10 @@ class TrayThermostat(threading.Thread):
 
     def OnTaskbarNotify(self, hwnd, msg, wparam, lparam):
         if lparam==win32con.WM_LBUTTONUP:
-            print("You clicked me.")
+            pass
         elif lparam==win32con.WM_LBUTTONDBLCLK:
-            print("You double-clicked me - goodbye")
             win32gui.DestroyWindow(self.hwnd)
         elif lparam==win32con.WM_RBUTTONUP:
-            print("You right clicked me.")
             menu = win32gui.CreatePopupMenu()
             win32gui.AppendMenu( menu, win32con.MF_GRAYED | win32con.MF_STRING, TrayThermostat.Connected, "Connected" if self.__connected else "Disconnected")
             win32gui.AppendMenu( menu, self.__flag_set(TrayThermostat.Automatic), TrayThermostat.Automatic, "Automatic")
