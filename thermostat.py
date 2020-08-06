@@ -4,8 +4,13 @@
 import configparser
 import sys
 import time
-import traceback
 import os
+import argparse
+import logging
+
+# Initialize logging
+log = logging.getLogger("thermostat")
+log.addHandler(logging.NullHandler())
 
 # OpenHardwareMonitorLib.dll is only 32-bit, so application must be 32-bit!
 if sys.maxsize > 2**32:
@@ -27,7 +32,7 @@ import winerror
 # Just for creating dialog popups
 import win32ui
 
-# To run the win32 window messagepump should be in its own thread
+# To run the win32 window messagepump; should be in its own thread
 import threading
 
 # Needs 32-bit hidapi.dll and lib in same directory as binary, or os.getcwd()
@@ -124,15 +129,15 @@ class VoltageSwitch(hid.Device):
         super().__init__(vid, pid, serial, path)
     
     def set12v(self):
-        print("Setting voltage switch to 12V")
+        log.debug("Setting voltage switch to 12V")
         return self.write(VoltageSwitch.v12)
     
     def set5v(self):
-        print("Setting voltage switch to 5V")
+        log.debug("Setting voltage switch to 5V")
         return self.write(VoltageSwitch.v5)
     
     def set0v(self):
-        print("Setting voltage switch to 0V")
+        log.debug("Setting voltage switch to 0V")
         return self.write(VoltageSwitch.v0)
     
     def __getitem__(self, key):
@@ -277,15 +282,14 @@ class Win32HID(threading.Event):
     # WM_DEVICECHANGE message handler.
     def __devicechange(self, hWnd, msg, wParam, lParam):
         info = win32gui_struct.UnpackDEV_BROADCAST(lParam)
-        #print("Device change notification:", wParam, str(info))
         
         if (info.devicetype == win32con.DBT_DEVTYP_DEVICEINTERFACE and
             self.__matchingdevice(info.name)):
             if wParam == win32con.DBT_DEVICEREMOVECOMPLETE:
-                print("Device is being removed")
+                log.debug("Device is being removed")
                 self.clear()
             elif wParam == win32con.DBT_DEVICEARRIVAL:
-                print("Device is being added")
+                log.debug("Device is being added")
                 self.set()
         return True
 
@@ -409,7 +413,7 @@ class TrayThermostat(threading.Thread):
                                 vs.set0v()
                                 changes = False
             except:
-                traceback.print_exc()
+                log.exception("Terminated HID connection")
             
             # Now we wait 300 milliseconds for GUI messages
             if self.__wait_msg_pump(timeout=300):
@@ -433,7 +437,7 @@ class TrayThermostat(threading.Thread):
         except win32gui.error:
             # This is common when windows is starting, and this code is hit
             # before the taskbar has been created.
-            print("Failed to add the taskbar icon - is explorer running?")
+            log.debug("Failed to add the taskbar icon - is explorer running?")
             # but keep running anyway - when explorer starts, we get the
             # TaskbarCreated message.
 
@@ -474,10 +478,10 @@ class TrayThermostat(threading.Thread):
     def OnCommand(self, hwnd, msg, wparam, lparam):
         id = win32api.LOWORD(wparam)
         if id == TrayThermostat.Exit:
-            print("Goodbye")
+            log.debug("Quitting")
             win32gui.DestroyWindow(self.hwnd)
         else:
-            print("Setting mode -", id)
+            log.debug("Setting mode - %i", id)
             self.__mode = id
 
 def mainloop(w32hid, sensor, thermostat):
@@ -487,35 +491,26 @@ def mainloop(w32hid, sensor, thermostat):
             with w32hid.device() as vs:
                 # On the first reading always set the switch state
                 changes = False
-            
-                switch = {
-                    '12v': vs.set12v,
-                    '5v': vs.set5v,
-                    '0v': vs.set0v,
-                    None: nop,
-                }
                 
                 while True:
                     time.sleep(2)
                     
                     # Set the switch state by feeding sensor data into thermostat
-                    switch.get(thermostat.mode(sensor.reading(), changes), unknown_switch)()
+                    vs[thermostat.mode(sensor.reading(), changes)]()
                     
                     # From now on, only set switch state on changes
                     changes = True
         except:
-            traceback.print_exc()
+            log.exception("Terminated HID connection")
             time.sleep(30)
 
 
-def main(argv=None):
+def verify_config(config):
     sections = ['thermostat', 'microcontroller', 'probe']
     types = ["cpu", "ram", "gpu", "mobo", "disk"]
-    config = configparser.ConfigParser()
-    config.read('thermostat.ini')
     
     if not all(config.has_section(s) for s in sections):
-        print("Config file 'thermostat.ini' not found; creating a new one.")
+        log.error("Config file 'thermostat.ini' not found; creating a new one.")
         config['thermostat'] = {
             "12V": "60",
             "5V": "45",
@@ -536,6 +531,20 @@ def main(argv=None):
                            "Startup Error", win32con.MB_ICONERROR)
         sys.exit(1)
 
+
+def main(argv=None):
+    types = ["cpu", "ram", "gpu", "mobo", "disk"]
+    
+    config = configparser.ConfigParser()
+    config.read('thermostat.ini')
+    
+    verify_config(config)
+    
+    parser = argparse.ArgumentParser(description='HTPC Thermostat')
+    parser.add_argument('--hidden', action='store_true', help='Do not display the track icon')
+    parser.add_argument('--logfile', required=False, help='Enable debug logging to file')
+    args = parser.parse_args()
+
     try:
         sensor_types = dict((t, config.getboolean("probe", t, fallback=False)) for t in types)
         s = TemperatureSensor(**dict(config["probe"], **sensor_types))
@@ -545,10 +554,22 @@ def main(argv=None):
         win32ui.MessageBox(sys.exc_info()[1].args[0], "Startup Error", win32con.MB_ICONERROR)
         sys.exit(1)
     
-    t = TrayThermostat(w, s, t)
-    t.name = "VoltageSwitch"
-    t.setDaemon(True)
-    t.start()
+    if args.logfile:
+        logging.basicConfig(
+            format='%(asctime)-15s [%(levelname)s] %(threadName)s %(name)s - %(message)s',
+            level=logging.DEBUG,
+            filename=args.logfile)
+    
+    if args.hidden:
+        loop = threading.Thread(target=mainloop, args=(w, s, t))
+        loop.setDaemon(True)
+        loop.name = "VoltageSwitch"
+        loop.start()
+    else:
+        t = TrayThermostat(w, s, t)
+        t.name = "VoltageSwitch"
+        t.setDaemon(True)
+        t.start()
     
     # Having trouble with thread scope; this only runs in main thread
     # or when class creating window is child of threading.Thread.
