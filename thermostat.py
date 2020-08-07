@@ -167,16 +167,17 @@ class TemperatureSensor():
         self.__hardware.Update()
 
         try:
-            self.__sensor = next(s for s in self.__hardware.Sensors if s.Index == 2 and s.Name == sensor)
+            self.__sensor = next(s for s in self.__hardware.Sensors if s.SensorType == 2 and s.Name == sensor)
         except:
             raise Exception("Sensor '%s' not found.\r\n\r\nAvailable sensors:\r\n%s"
-                            %(sensor, '\r\n'.join(sorted(f"- {s.Name}" for s in self.__hardware.Sensors if s.Index == 2))))
+                            %(sensor, '\r\n'.join(sorted(f"- {s.Name}" for s in self.__hardware.Sensors if s.SensorType == 2))))
         
         self.value = self.__sensor.Value
     
     def reading(self):
         self.__hardware.Update()
         self.value = self.__sensor.Value
+        log.debug("Temperature reading: %i", self.value)
         return self.value
 
 
