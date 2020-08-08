@@ -56,6 +56,9 @@ class Thermostat():
         fhyst = int(kwargs.pop("forward_hysteresis", 0))
         rhyst = int(kwargs.pop("reverse_hysteresis", 0))
         
+        # Temperatures that deviate more than this are ignored
+        self.__max_deviation = int(kwargs.pop("max_deviation", 0))
+        
         self.__tmap = {}
         
         for i in range(0, len(args), 2):
@@ -96,6 +99,13 @@ class Thermostat():
         self.__hrange = lambda t: fail
         
     def mode(self, temperature, changes=True, unchanged=None):
+        try:
+            # Should deviation be an absolute value?
+            if self.__max_deviation and (temperature - self.__last_t) > self.__max_deviation:
+                self.__last_t = temperature
+                return unchanged if changes else self.__last
+        except AttributeError:
+            self.__last_t = temperature
         newmode, hasmode = self.__hrange(temperature)
         if not hasmode:
             self.__hrange = next(self.__ranges[f] for f in self.__ranges.keys() if f(temperature))
@@ -144,6 +154,7 @@ class VoltageSwitch(hid.Device):
         return self.__switch[key]
 
 
+# Based on https://stackoverflow.com/questions/3262603/accessing-cpu-temperature-in-python
 class TemperatureSensor():
     def __init__(self, device=None, sensor=None, cpu=True, ram=False, gpu=False, mobo=False, disk=False):
         self.__handle = Hardware.Computer()
@@ -516,15 +527,17 @@ def verify_config(config):
             "12V": "60",
             "5V": "45",
             "0V": "0",
-            "reverse_hysteresis": "5"
+            "reverse_hysteresis": "5",
+            "forward_hysteresis": "0",
+            "max_deviation": "0",
         }
         config['microcontroller'] = {
             "vid": "0x16C0",
-            "pid": "0x0486"
+            "pid": "0x0486",
         }
         config['probe'] = dict({
             "device": "Intel Core i7-6600U",
-            "sensor": "CPU Package"
+            "sensor": "CPU Package",
         },**dict((t, "false" if t != "cpu" else "true") for t in types))
         with open('thermostat.ini', 'w') as configfile:
             config.write(configfile)
