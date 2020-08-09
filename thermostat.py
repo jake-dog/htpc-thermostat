@@ -105,7 +105,8 @@ class Thermostat():
                 self.__last_t = temperature
                 return unchanged if changes else self.__last
         except AttributeError:
-            self.__last_t = temperature
+            pass
+        self.__last_t = temperature
         newmode, hasmode = self.__hrange(temperature)
         if not hasmode:
             self.__hrange = next(self.__ranges[f] for f in self.__ranges.keys() if f(temperature))
