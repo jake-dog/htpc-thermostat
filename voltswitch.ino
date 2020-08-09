@@ -12,6 +12,7 @@
 const char fiveV = 0;
 const char twelveV = 1;
 const char zeroV = 2;
+const char reboot = 3;
 
 // Pins to be used
 const int ledPin = 13;
@@ -101,6 +102,13 @@ void loop() {
             digitalWrite(relay2, LOW);
             state = newState;
             break;
+          case reboot:
+            Serial.println("Jumping to bootloader");
+            // https://forum.pjrc.com/threads/23776-Teensy2-0-Software-Reset
+            // "reboot actually happens 15 ms after you make this call"
+            // "add a delay after the function call"
+            _reboot_Teensyduino_();
+            delay(5000);
         }
       }
     }
